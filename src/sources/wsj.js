@@ -4,6 +4,18 @@ import { cleanTitle, dedupeKey, fetchJson, normalizeCity, sleep } from './normal
 
 const BASE = 'https://www.workingstudentjobs.de/api/v1/jobs';
 const PAGE_SIZE = 300; // API maximum
+const MAX_PAGES = 200;
+
+// Follow only "next" links that stay on this API, so a bad upstream response can't
+// send our server to another host.
+const safeNext = (next) => {
+  if (!next) return null;
+  try {
+    const u = new URL(next, BASE);
+    const base = new URL(BASE);
+    return u.origin === base.origin && u.pathname === base.pathname ? u.href : null;
+  } catch { return null; }
+};
 
 const LANG_LEVELS = new Set(['required', 'optional', 'not_required']);
 const MODES = new Set(['remote', 'hybrid', 'onsite']);
@@ -46,14 +58,18 @@ export const normalize = (j) => {
  */
 export const fetchJobs = async ({ shouldStop } = {}) => {
   const jobs = [];
+  const seen = new Set();
   let url = `${BASE}?limit=${PAGE_SIZE}`;
-  while (url) {
+  for (let pages = 0; url; pages++) {
+    // ~70 pages exist today; the cap stops a runaway cursor from looping forever.
+    if (pages >= MAX_PAGES) return { jobs, complete: false };
     const page = await fetchJson(url);
     const batch = (page.data ?? []).map(normalize);
     jobs.push(...batch);
     if (await shouldStop?.(batch)) return { jobs, complete: false };
-    url = page.links?.next ?? null;
-    if (url) await sleep(250);
+    url = safeNext(page.links?.next);
+    if (url && seen.has(url)) return { jobs, complete: false };
+    if (url) { seen.add(url); await sleep(250); }
   }
   return { jobs, complete: true };
 };

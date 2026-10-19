@@ -2,6 +2,8 @@
 
 Working student jobs, internships and theses across Germany. Search and filter by city, field, tech area, work mode and German/English requirements, track what you applied to, and get an email with the apply link as soon as a job matching your alerts is posted.
 
+**Live site:** https://firstapply-kappa.vercel.app
+
 Anyone can browse jobs. Saving jobs, the application tracker, alerts and settings are private to the owner (password sign-in).
 
 ## Run locally
