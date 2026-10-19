@@ -62,10 +62,14 @@ app.post('/api/auth/request', ah(async (req, res) => {
   //    few addresses requesting over and over can't drain it for everyone else.
   const gmail = mailProvider() === 'gmail';
   const known = await one('SELECT 1 FROM users WHERE email = $1', [email]);
-  let allowed = await rateLimit(`signin-email-hour:${email}`, 6, 60);
+  let allowed = (await rateLimit(`signin-email-hour:${email}`, 6, 60))
+    && (await rateLimit(`signin-email-day:${email}`, 20, 60 * 24));
   if (allowed && known) {
+    // Hard ceiling over every existing-account send (keeps the total under the provider
+    // quota); sends beyond an account's daily reserve must also fit under a lower soft cap.
     const reserved = await rateLimit(`signin-known-reserved:${email}`, 2, 60 * 24);
-    if (!reserved) allowed = await rateLimit('signin-known', gmail ? 150 : 30, 60 * 24);
+    allowed = await rateLimit('signin-known-total', gmail ? 200 : 40, 60 * 24);
+    if (allowed && !reserved) allowed = await rateLimit('signin-known', gmail ? 100 : 20, 60 * 24);
   } else if (allowed) {
     allowed = await rateLimit('signin-new', Number(process.env.SIGNUP_DAILY_LIMIT || (gmail ? 150 : 30)), 60 * 24);
   }
