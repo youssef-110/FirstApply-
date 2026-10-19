@@ -54,18 +54,26 @@ app.post('/api/auth/request', ah(async (req, res) => {
 
   // Silent limits: past these, no email is sent but the answer is identical, so they reveal
   // nothing about whether an address has an account.
-  //  - per address: stops anyone flooding one inbox from many IPs
+  //  - per address, per hour: stops anyone flooding one inbox from many IPs, while keeping
+  //    any lockout short (an hour, not a day)
   //  - per pool: keeps the total under the email provider's daily quota. New and existing
   //    addresses have separate pools, so fake sign-ups can't use up existing users' budget.
+  //    An existing account's first 2 sign-ins of the day never touch the shared pool, so a
+  //    few addresses requesting over and over can't drain it for everyone else.
   const gmail = mailProvider() === 'gmail';
   const known = await one('SELECT 1 FROM users WHERE email = $1', [email]);
-  const pool = known ? ['signin-known', gmail ? 200 : 40] : ['signin-new', Number(process.env.SIGNUP_DAILY_LIMIT || (gmail ? 150 : 30))];
-  const allowed = (await rateLimit(`signin-email-day:${email}`, 20, 60 * 24)) && (await rateLimit(pool[0], pool[1], 60 * 24));
+  let allowed = await rateLimit(`signin-email-hour:${email}`, 6, 60);
+  if (allowed && known) {
+    const reserved = await rateLimit(`signin-known-reserved:${email}`, 2, 60 * 24);
+    if (!reserved) allowed = await rateLimit('signin-known', gmail ? 150 : 30, 60 * 24);
+  } else if (allowed) {
+    allowed = await rateLimit('signin-new', Number(process.env.SIGNUP_DAILY_LIMIT || (gmail ? 150 : 30)), 60 * 24);
+  }
 
   // Answer first, send afterwards: every path takes the same time, so response timing can't
   // reveal which limit applied or whether the address has an account.
   res.json({ sent: true });
-  if (!allowed) return console.warn(`[auth] sign-in email skipped (${pool[0]} or per-address limit)`);
+  if (!allowed) return console.warn(`[auth] sign-in email skipped (${known ? "existing" : "new"} address, limit reached)`);
   const send = (async () => {
     const token = await createLoginToken(email);
     // The token sits in the URL fragment, so it never reaches server or proxy logs.
