@@ -743,7 +743,9 @@ function setUser(user, admin = false) {
   state.user = user;
   state.admin = admin;
   document.querySelectorAll('[data-owner]').forEach((el) => { el.hidden = !user; });
-  $('#sign-in').hidden = !!user;
+  // Signed in: the header button becomes a way to the account (alerts, data, sign out).
+  $('#sign-in').textContent = user ? 'Account' : 'Sign in';
+  $('#sign-in').hidden = false;
   if (user) updateCounts();
 }
 
@@ -832,7 +834,7 @@ $('#theme-toggle').onclick = () => {
 };
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', syncThemeButton);
 syncThemeButton();
-$('#sign-in').onclick = () => openLogin();
+$('#sign-in').onclick = () => (state.user ? (location.hash = '#/alerts') : openLogin());
 
 // ---------- boot ----------
 (async () => {
