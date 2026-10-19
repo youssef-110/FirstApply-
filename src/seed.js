@@ -7,7 +7,9 @@ import { parseFilters } from './filters.js';
  * onto it, so nothing the owner saved is lost.
  */
 export const seed = async () => {
-  const email = (process.env.ADMIN_EMAIL || process.env.ALERT_EMAIL || '').trim().toLowerCase();
+  // Settings from the single-user version, which stored an alert address; no longer read.
+  await q("DELETE FROM settings WHERE key IN ('email', 'lastEmail', 'lastEmailError')");
+  const email = (process.env.ADMIN_EMAIL || '').trim().toLowerCase();
   if (!email) return;
   const admin = await one(`INSERT INTO users (email, terms_accepted_at) VALUES ($1, now())
     ON CONFLICT (email) DO UPDATE SET email = excluded.email RETURNING id`, [email]);
