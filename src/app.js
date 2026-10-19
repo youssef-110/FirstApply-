@@ -48,13 +48,24 @@ app.post('/api/auth/request', ah(async (req, res) => {
   // Limits protect both inboxes from being flooded and the site's daily email quota.
   if (!(await rateLimit(`signin-ip:${clientIp(req)}`, 10, 60))) return tooMany(res, 60);
   if (!(await rateLimit(`signin-email:${email}`, 3, 15))) return tooMany(res, 15);
-  // Daily cap on sign-in emails to new addresses, to protect the email provider's quota.
-  // Existing accounts skip it, so a flood of fake sign-ups can only ever pause new sign-ups,
-  // never lock out people who already have an account.
+  if (!(await rateLimit(`signin-email-day:${email}`, 10, 60 * 24))) {
+    return res.status(429).json({ error: "Too many sign-in emails for this address today. Try again tomorrow." });
+  }
+  // Hard ceiling below the email provider's daily quota. It treats every address the same,
+  // so its answer reveals nothing about who has an account.
+  const gmail = mailProvider() === 'gmail';
+  if (!(await rateLimit('signin-all', gmail ? 300 : 80, 60 * 24))) {
+    return res.status(503).json({ error: 'Sign-in emails are paused for today because of high demand. Please try again tomorrow.' });
+  }
+  // Smaller cap for addresses without an account, so a flood of fake sign-ups pauses new
+  // sign-ups first and leaves room for existing users. When it's hit, unknown addresses get the
+  // same "sent" answer as everyone else (but no email), so the response can't be used to
+  // find out whether an address has an account.
   const known = await one('SELECT 1 FROM users WHERE email = $1', [email]);
-  const dailyNew = Number(process.env.SIGNUP_DAILY_LIMIT || (mailProvider() === 'gmail' ? 150 : 40));
+  const dailyNew = Number(process.env.SIGNUP_DAILY_LIMIT || (gmail ? 150 : 40));
   if (!known && !(await rateLimit('signin-new', dailyNew, 60 * 24))) {
-    return res.status(503).json({ error: 'New sign-ups are paused for today because of high demand. Please try again tomorrow.' });
+    console.warn('[auth] daily new sign-up cap reached; not sending');
+    return res.json({ sent: true });
   }
 
   const token = await createLoginToken(email);
