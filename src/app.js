@@ -48,8 +48,14 @@ app.post('/api/auth/request', ah(async (req, res) => {
   // Limits protect both inboxes from being flooded and the site's daily email quota.
   if (!(await rateLimit(`signin-ip:${clientIp(req)}`, 10, 60))) return tooMany(res, 60);
   if (!(await rateLimit(`signin-email:${email}`, 3, 15))) return tooMany(res, 15);
-  // Resend's free plan allows 100 emails a day in total; keep room for alert emails.
-  if (!(await rateLimit('signin-all', 50, 60 * 24))) return res.status(503).json({ error: 'Sign-in is busy right now. Try again later today.' });
+  // Daily cap on sign-in emails to new addresses, to protect the email provider's quota.
+  // Existing accounts skip it, so a flood of fake sign-ups can only ever pause new sign-ups,
+  // never lock out people who already have an account.
+  const known = await one('SELECT 1 FROM users WHERE email = $1', [email]);
+  const dailyNew = Number(process.env.SIGNUP_DAILY_LIMIT || (mailProvider() === 'gmail' ? 150 : 40));
+  if (!known && !(await rateLimit('signin-new', dailyNew, 60 * 24))) {
+    return res.status(503).json({ error: 'New sign-ups are paused for today because of high demand. Please try again tomorrow.' });
+  }
 
   const token = await createLoginToken(email);
   try {

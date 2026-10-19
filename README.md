@@ -20,7 +20,9 @@ Open http://localhost:4380. Without `DATABASE_URL`, data lives in an embedded Po
 | Name | Purpose |
 | --- | --- |
 | `DATABASE_URL` | Neon Postgres connection string (production) |
-| `RESEND_API_KEY` | Sends alert emails through Resend |
+| `GMAIL_USER`, `GMAIL_APP_PASSWORD` | Send email through a Gmail account (no domain needed, about 500 emails a day). Used instead of Resend when set |
+| `RESEND_API_KEY` | Sends email through Resend when Gmail isn't set |
+| `SIGNUP_DAILY_LIMIT` | Sign-in emails to new addresses per day (default 150 with Gmail, 40 with Resend) |
 | `MAIL_FROM` | Sender, e.g. `Firstapply <alerts@yourdomain.com>`. Resend needs a verified domain to email anyone but the Resend account owner, so sign-up only works for other people once a domain is verified |
 | `ADMIN_EMAIL` | Your account: sees job-source status and can trigger a manual check; owns data migrated from the single-user version |
 | `SESSION_SECRET` | Signs session cookies (32+ characters). Changing it signs everyone out |
