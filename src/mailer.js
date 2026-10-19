@@ -5,12 +5,12 @@ const from = () => process.env.MAIL_FROM || 'Firstapply <onboarding@resend.dev>'
 
 export const mailProvider = () => (process.env.RESEND_API_KEY ? 'resend' : null);
 
-export const sendMail = async ({ to, subject, html, text }) => {
+export const sendMail = async ({ to, subject, html, text, headers }) => {
   if (!process.env.RESEND_API_KEY) throw new Error('Email is not set up: RESEND_API_KEY is missing.');
   const res = await fetch('https://api.resend.com/emails', {
     method: 'POST',
     headers: { Authorization: `Bearer ${process.env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ from: from(), to: [to], subject, html, text }),
+    body: JSON.stringify({ from: from(), to: [to], subject, html, text, ...(headers ? { headers } : {}) }),
     signal: AbortSignal.timeout(20_000),
   });
   const body = await res.json().catch(() => ({}));

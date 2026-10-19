@@ -4,7 +4,7 @@ Working student jobs, internships and theses across Germany. Search and filter b
 
 **Live site:** https://firstapply-kappa.vercel.app
 
-Anyone can browse jobs. Saving jobs, the application tracker, alerts and settings are private to the owner (password sign-in).
+Anyone can browse jobs. Creating a free account (email sign-in link, no password) unlocks saved jobs, the application tracker and email alerts. Each account's data is private to it, and users can download or delete their data at any time. Imprint, privacy policy and terms of use are in `public/legal/`.
 
 ## Run locally
 
@@ -21,11 +21,10 @@ Open http://localhost:4380. Without `DATABASE_URL`, data lives in an embedded Po
 | --- | --- |
 | `DATABASE_URL` | Neon Postgres connection string (production) |
 | `RESEND_API_KEY` | Sends alert emails through Resend |
-| `MAIL_FROM` | Sender, e.g. `Firstapply <onboarding@resend.dev>`; needs a verified domain to email anyone but the Resend account owner |
-| `OWNER_PASSWORD` | Owner sign-in password (12+ characters) |
+| `MAIL_FROM` | Sender, e.g. `Firstapply <alerts@yourdomain.com>`. Resend needs a verified domain to email anyone but the Resend account owner, so sign-up only works for other people once a domain is verified |
+| `ADMIN_EMAIL` | Your account: sees job-source status and can trigger a manual check; owns data migrated from the single-user version |
 | `SESSION_SECRET` | Signs session cookies (32+ characters). Changing it signs everyone out |
 | `CRON_SECRET` | Scheduler calls send `Authorization: Bearer <CRON_SECRET>` (32+ characters) |
-| `ALERT_EMAIL` | Default alert address on first setup |
 | `APP_URL` | Public URL, used for links in emails |
 | `DIGEST_HOUR` | Hour (Berlin time) for daily-digest alerts, default 8 |
 
@@ -38,8 +37,12 @@ The first import never sends emails. Only jobs found after that count as new.
 ## Deploy (Vercel)
 
 1. Attach Neon to the Vercel project (sets `DATABASE_URL`) and set the variables above.
-2. `npm run db:setup` with `DATABASE_URL` in `.env` creates the schema and runs the first import.
+2. After deploying, `POST /api/cron/setup` with `Authorization: Bearer <CRON_SECRET>` creates or migrates the schema and runs the first import (add `?import=0` to only migrate).
 3. `vercel deploy --prod`.
+
+## Tests
+
+`npm test` runs the account and privacy checks (data isolation between users, single-use sign-in links, unsubscribe, export, deletion) against a throwaway local database.
 
 ## Sources
 

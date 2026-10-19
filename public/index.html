@@ -7,9 +7,7 @@
   <meta name="description" content="Working student jobs, internships and theses across Germany. Filter by city, field and language, and get an email with the apply link as soon as a new job is posted.">
   <meta name="theme-color" content="#2347D9">
   <link rel="icon" href="/logo.svg" type="image/svg+xml">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="preload" href="/fonts/manrope-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="/app.css">
   <script src="/theme.js"></script>
 </head>
@@ -50,6 +48,13 @@
   </header>
 
   <main id="main" tabindex="-1"></main>
+
+  <footer class="site-footer">
+    <div class="site-footer-inner">
+      <span>Firstapply. Listings from workingstudentjobs.de and the Bundesagentur für Arbeit.</span>
+      <nav aria-label="Legal"><a href="/legal/imprint.html">Imprint</a><a href="/legal/privacy.html">Privacy policy</a><a href="/legal/terms.html">Terms of use</a></nav>
+    </div>
+  </footer>
 
   <div class="toast-region" aria-live="polite" id="toasts"></div>
   <dialog id="modal" class="modal"></dialog>

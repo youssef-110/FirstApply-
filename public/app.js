@@ -125,7 +125,8 @@ const state = {
   selectedId: null,
   lastVisit: store.get('lastVisit', new Date().toISOString()),
   settings: null,
-  owner: false,
+  user: null,
+  admin: false,
 };
 // Mark everything older than this visit as seen a few seconds after opening the app.
 setTimeout(() => store.set('lastVisit', new Date().toISOString()), 5000);
@@ -152,7 +153,7 @@ function route() {
     if (a.dataset.tab === page) a.setAttribute('aria-current', 'page');
     else a.removeAttribute('aria-current');
   });
-  if (page !== 'jobs' && !state.owner) return renderSignInPage(page);
+  if (page !== 'jobs' && !state.user) return renderSignInPage(page);
   let jobId = null;
   try { jobId = id ? decodeURIComponent(id) : null; } catch { /* malformed link: show the list */ }
   routes[page](jobId);
@@ -388,7 +389,7 @@ document.addEventListener('click', async (e) => {
   if (!card) return;
   const id = card.dataset.id;
   if (e.target.closest('[data-save]')) {
-    if (!state.owner) return openLogin();
+    if (!state.user) return openLogin();
     const job = state.jobs.find((j) => j.id === id);
     await setStatus(id, job?.status === 'saved' ? null : 'saved');
     return;
@@ -432,7 +433,7 @@ function renderDetail(j) {
         <a class="btn btn-primary" href="${esc(safeUrl(j.apply_url))}" target="_blank" rel="noopener noreferrer" id="apply">Apply${icons.external}</a>
         <button type="button" class="btn" id="save">${j.status === 'saved' ? icons.bookmarkFill + 'Saved' : icons.bookmark + 'Save'}</button>
         <label class="visually-hidden" for="status">Application status</label>
-        <select class="select" id="status" ${state.owner ? '' : 'hidden'}>
+        <select class="select" id="status" ${state.user ? '' : 'hidden'}>
           <option value="">Not applied</option>
           ${['saved', ...TRACK_STATUSES, 'hidden'].map((s) => `<option value="${s}" ${j.status === s ? 'selected' : ''}>${STATUS_LABELS[s]}</option>`).join('')}
         </select>
@@ -452,7 +453,7 @@ function renderDetail(j) {
         </dl>
       </section>
       ${j.skills.length ? `<section><h3>${j.source === 'ba' ? 'Related occupations' : 'Skills'}</h3><div class="skills">${j.skills.map((s) => `<span class="tag">${esc(s)}</span>`).join('')}</div></section>` : ''}
-      ${state.owner ? `<section><h3>Your notes</h3>
+      ${state.user ? `<section><h3>Your notes</h3>
         <label class="visually-hidden" for="notes">Notes</label>
         <textarea class="textarea" id="notes" placeholder="Contact person, deadline, what to mention in the cover letter">${esc(j.notes ?? '')}</textarea>
       </section>` : ''}
@@ -462,7 +463,7 @@ function renderDetail(j) {
   $('#save').onclick = () => setStatus(j.id, j.status === 'saved' ? null : 'saved');
   $('#status').onchange = (e) => setStatus(j.id, e.target.value || null);
   $('#apply').addEventListener('click', () => {
-    if (!state.owner || TRACK_STATUSES.includes(j.status)) return;
+    if (!state.user || TRACK_STATUSES.includes(j.status)) return;
     // After opening the employer's page, ask once so the tracker stays accurate.
     $('#apply-confirm').innerHTML = `<div class="apply-confirm"><span>Did you apply?</span><button type="button" class="btn btn-primary btn-sm" id="mark-applied">Mark as applied</button><button type="button" class="btn btn-ghost btn-sm" id="not-yet">Not yet</button></div>`;
     $('#mark-applied').onclick = () => setStatus(j.id, 'applied');
@@ -477,7 +478,7 @@ function renderDetail(j) {
 }
 
 async function setStatus(id, status) {
-  if (!state.owner) return openLogin();
+  if (!state.user) return openLogin();
   try {
     await api(`/api/jobs/${encodeURIComponent(id)}/status`, { method: 'PUT', body: { status } });
   } catch (err) { return toast(err.message); }
@@ -504,7 +505,7 @@ function refreshJob(id, status) {
 
 // ---------- alerts modal ----------
 function openAlertModal() {
-  if (!state.owner) return openLogin({ then: openAlertModal });
+  if (!state.user) return openLogin({ then: openAlertModal });
   const modal = $('#modal');
   const f = state.filters;
   modal.innerHTML = `<form method="dialog" id="alert-form">
@@ -514,7 +515,7 @@ function openAlertModal() {
       <div><label class="label" for="alert-name">Alert name</label><input class="input" id="alert-name" required maxlength="120" value="${esc(state.summary || 'New jobs')}"></div>
       <div><label class="label" for="alert-freq">How often</label>
         <select class="select" id="alert-freq"><option value="instant">As soon as a job is posted</option><option value="daily">Once a day</option></select></div>
-      <p class="hint" style="margin:0">Emails go to <strong>${esc(state.settings?.email || 'your address')}</strong>. Change it on the Alerts page.</p>
+      <p class="hint" style="margin:0">Emails go to <strong>${esc(state.user?.email ?? 'your address')}</strong>.</p>
     </div>
     <div class="modal-foot"><button type="button" class="btn btn-ghost" value="cancel" id="alert-cancel">Cancel</button><button class="btn btn-primary" type="submit">Create alert</button></div>
   </form>`;
@@ -589,27 +590,25 @@ async function updateCounts() {
 // ---------- alerts page ----------
 async function renderAlerts() {
   $('#main').innerHTML = `<div class="page"><div class="page-head"><div><h1>Alerts</h1><p>Get an email with the apply link as soon as a matching job is posted.</p></div>
-    <div class="head-actions"><a class="btn btn-primary" href="#/jobs" id="new-alert">${icons.bell}New alert from a search</a><button type="button" class="btn" id="sign-out">Sign out</button></div></div>
+    <div class="head-actions"><a class="btn btn-primary" href="#/jobs">${icons.bell}New alert from a search</a></div></div>
     <div id="alerts-root"><div class="skeleton" style="height:200px"></div></div></div>`;
-  const [settings, alerts] = await Promise.all([api('/api/settings'), api('/api/alerts')]);
-  state.settings = settings;
-  const provider = { resend: 'Resend' }[settings.mailProvider];
+  const [account, alerts] = await Promise.all([api('/api/account'), api('/api/alerts')]);
+  state.account = account;
   const syncLine = (s) => s.at ? `Checked ${ago(s.at)}. ${nf.format(s.fetched)} jobs read, ${nf.format(s.new)} new.` : 'Not checked yet.';
 
   $('#alerts-root').innerHTML = `
     <section class="panel panel-pad" aria-labelledby="email-h">
-      <h2 id="email-h">Email address</h2>
-      <p class="hint" style="margin:4px 0 0">Alert emails are sent here.</p>
-      <form class="email-row" id="email-form">
-        <label class="visually-hidden" for="email">Email address</label>
-        <input class="input" id="email" type="email" required value="${esc(settings.email)}">
-        <button class="btn btn-primary" type="submit">Save email</button>
-        <button class="btn" type="button" id="test-email" ${provider ? '' : 'disabled'}>Send test email</button>
-      </form>
-      ${provider
-        ? `<div class="callout callout-ok"><div>Sending through ${provider}. ${settings.lastEmail ? `Last email sent ${ago(settings.lastEmail.at)} with ${settings.lastEmail.jobs} ${settings.lastEmail.jobs === 1 ? 'job' : 'jobs'}.` : 'No alert emails sent yet.'}
-           ${settings.lastEmailError && (!settings.lastEmail || settings.lastEmailError.at > settings.lastEmail.at) ? `<br><strong>Last attempt failed:</strong> ${esc(settings.lastEmailError.message)}` : ''}</div></div>`
-        : `<div class="callout callout-warn"><div><strong>Email sending isn't set up yet.</strong> New matches are collected and sent once it is (matches older than 48 hours are dropped). Add <code>RESEND_API_KEY</code> to the server's environment variables.</div></div>`}
+      <h2 id="email-h">Alert emails</h2>
+      <p class="hint" style="margin:4px 0 0">Sent to <strong>${esc(account.email)}</strong>, the address you signed in with.</p>
+      <div class="email-row">
+        <label class="toggle-row"><span class="switch"><input type="checkbox" role="switch" id="emails-on" ${account.emailsPaused ? '' : 'checked'}></span>
+          <span>Email me when new jobs match my alerts</span></label>
+      </div>
+      <div class="head-actions" style="margin-top:14px">
+        <button class="btn btn-sm" type="button" id="test-email" ${account.mailReady ? '' : 'disabled'}>Send test email</button>
+      </div>
+      ${account.lastEmailError ? `<div class="callout callout-warn"><div><strong>The last alert email couldn't be delivered:</strong> ${esc(account.lastEmailError)}</div></div>`
+        : account.lastEmailAt ? `<p class="hint" style="margin:12px 0 0">Last alert email sent ${ago(account.lastEmailAt)}.</p>` : ''}
     </section>
     <section class="panel" aria-labelledby="alerts-h">
       <div class="panel-pad" style="padding-bottom:12px"><h2 id="alerts-h">Your alerts</h2></div>
@@ -618,7 +617,7 @@ async function renderAlerts() {
           <div>
             <div class="alert-name">${esc(a.name)}</div>
             <div class="alert-summary">${esc(a.summary)}</div>
-            <div class="alert-stats">${nf.format(a.matchesLastWeek)} matching ${a.matchesLastWeek === 1 ? 'job' : 'jobs'} found in the past 7 days. ${nf.format(a.sent)} emailed so far.</div>
+            <div class="alert-stats">${nf.format(a.matchesLastWeek)} matching ${a.matchesLastWeek === 1 ? 'job' : 'jobs'} posted in the past 7 days. ${nf.format(a.sent)} emailed so far.</div>
           </div>
           <div class="alert-controls">
             <label class="visually-hidden" for="freq-${a.id}">How often</label>
@@ -630,29 +629,56 @@ async function renderAlerts() {
         </div>`).join('')
         : `<div class="empty" style="padding-top:24px"><h2>No alerts yet</h2><p>Search for the jobs you want, then press Create alert.</p></div>`}
     </section>
-    <section class="panel panel-pad" aria-labelledby="src-h">
+    ${account.admin ? `<section class="panel panel-pad" aria-labelledby="src-h">
       <h2 id="src-h">Job sources</h2>
-      <p class="hint" style="margin:4px 0 0">New jobs are checked every ${settings.pollMinutes} minutes.${settings.sync.lastError ? ` Last error: ${esc(settings.sync.lastError.message)}` : ''}</p>
-      <div class="sources">${Object.values(settings.syncs).map((s) => `<div class="source-card"><strong>${esc(s.label)}</strong><span>${syncLine(s)}</span></div>`).join('')}</div>
+      <p class="hint" style="margin:4px 0 0">Only you see this as the site admin. New jobs are checked every ${account.pollMinutes} minutes.${account.lastError ? ` Last error: ${esc(account.lastError.message)}` : ''}</p>
+      <div class="sources">${Object.values(account.syncs ?? {}).map((s) => `<div class="source-card"><strong>${esc(s.label)}</strong><span>${syncLine(s)}</span></div>`).join('')}</div>
       <button type="button" class="btn btn-sm" id="sync-now" style="margin-top:14px">Check for new jobs now</button>
+    </section>` : ''}
+    <section class="panel panel-pad" aria-labelledby="account-h">
+      <h2 id="account-h">Your account</h2>
+      <p class="hint" style="margin:4px 0 0">Signed in as ${esc(account.email)} since ${fmtDate(account.createdAt)}.</p>
+      <div class="head-actions" style="margin-top:14px">
+        <a class="btn btn-sm" href="/api/account/export" download>Download my data</a>
+        <button type="button" class="btn btn-sm" id="sign-out">Sign out</button>
+        <button type="button" class="btn btn-sm" id="sign-out-all">Sign out on all devices</button>
+        <button type="button" class="btn btn-sm btn-ghost btn-danger" id="delete-account">Delete account</button>
+      </div>
     </section>`;
 
-  $('#sign-out').onclick = async () => {
-    await api('/api/logout', { method: 'POST' });
-    setOwner(false);
-    location.hash = '#/jobs';
-    toast('Signed out');
-  };
-  $('#email-form').onsubmit = async (e) => {
-    e.preventDefault();
-    try { await api('/api/settings', { method: 'PUT', body: { email: $('#email').value } }); toast('Email saved'); } catch (err) { toast(err.message); }
+  $('#emails-on').onchange = async (e) => {
+    try {
+      await api('/api/account', { method: 'PUT', body: { emailsPaused: !e.target.checked } });
+      toast(e.target.checked ? 'Alert emails on' : 'Alert emails paused');
+    } catch (err) { toast(err.message); e.target.checked = !e.target.checked; }
   };
   $('#test-email').onclick = async (e) => {
     e.target.disabled = true;
     try { const r = await api('/api/email/test', { method: 'POST' }); toast(`Test email sent to ${r.to}`); } catch (err) { toast(err.message); }
     e.target.disabled = false;
   };
-  $('#sync-now').onclick = async (e) => {
+  $('#sign-out').onclick = async () => {
+    await api('/api/auth/logout', { method: 'POST' });
+    setUser(null);
+    location.hash = '#/jobs';
+    toast('Signed out');
+  };
+  $('#sign-out-all').onclick = async () => {
+    await api('/api/account/logout-everywhere', { method: 'POST' });
+    setUser(null);
+    location.hash = '#/jobs';
+    toast('Signed out on all devices');
+  };
+  $('#delete-account').onclick = async () => {
+    if (!confirm('Delete your Firstapply account? Your alerts, saved jobs and application history are erased for good, and alert emails stop. This cannot be undone.')) return;
+    try {
+      await api('/api/account', { method: 'DELETE' });
+      setUser(null);
+      location.hash = '#/jobs';
+      toast('Your account was deleted');
+    } catch (err) { toast(err.message); }
+  };
+  $('#sync-now')?.addEventListener('click', async (e) => {
     e.target.disabled = true;
     e.target.textContent = 'Checking…';
     try {
@@ -660,7 +686,7 @@ async function renderAlerts() {
       toast(r.error ? `Check failed: ${r.error}` : r.skipped ? 'A check is already running' : `${r.new} new ${r.new === 1 ? 'job' : 'jobs'} found`);
     } catch (err) { toast(err.message); }
     renderAlerts();
-  };
+  });
   $('#alerts-root').addEventListener('change', async (e) => {
     const row = e.target.closest('.alert-row');
     if (!row) return;
@@ -713,43 +739,53 @@ async function pollStatus() {
 }
 
 // ---------- sign in ----------
-function setOwner(owner) {
-  state.owner = owner;
-  document.querySelectorAll('[data-owner]').forEach((el) => { el.hidden = !owner; });
-  $('#sign-in').hidden = owner;
-  if (owner) updateCounts();
+function setUser(user, admin = false) {
+  state.user = user;
+  state.admin = admin;
+  document.querySelectorAll('[data-owner]').forEach((el) => { el.hidden = !user; });
+  $('#sign-in').hidden = !!user;
+  if (user) updateCounts();
 }
 
 function openLogin({ then } = {}) {
+  if (then) store.set('afterSignIn', 'alert');
   const modal = $('#modal');
-  modal.innerHTML = `<form method="dialog" id="login-form">
+  modal.innerHTML = `<form method="dialog" id="login-form" novalidate>
     <div class="modal-body">
-      <h2>Sign in</h2>
-      <p class="hint modal-lead">Sign in to save jobs, track applications and get email alerts.</p>
-      <div><label class="label" for="password">Password</label><input class="input" id="password" type="password" autocomplete="current-password" required></div>
+      <h2>Sign in or create an account</h2>
+      <p class="hint modal-lead">Save jobs, track your applications and get an email the moment a matching job is posted. No password: we email you a sign-in link.</p>
+      <div><label class="label" for="login-email">Email address</label><input class="input" id="login-email" type="email" autocomplete="email" required maxlength="254"></div>
+      <label class="check-row"><input type="checkbox" id="login-terms" required>
+        <span>I agree to the <a href="/legal/terms.html" target="_blank" rel="noopener">terms of use</a> and have read the <a href="/legal/privacy.html" target="_blank" rel="noopener">privacy policy</a>.</span></label>
       <p class="login-error" id="login-error" role="alert"></p>
     </div>
-    <div class="modal-foot"><button type="button" class="btn btn-ghost" id="login-cancel">Cancel</button><button class="btn btn-primary" type="submit">Sign in</button></div>
+    <div class="modal-foot"><button type="button" class="btn btn-ghost" id="login-cancel">Cancel</button><button class="btn btn-primary" type="submit" id="login-submit">Email me a sign-in link</button></div>
   </form>`;
   modal.showModal();
-  $('#password').focus();
+  $('#login-email').focus();
   $('#login-cancel').onclick = () => modal.close();
   $('#login-form').onsubmit = async (e) => {
     e.preventDefault();
+    const email = $('#login-email').value.trim();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return void ($('#login-error').textContent = 'Enter a valid email address, like name@example.com.');
+    if (!$('#login-terms').checked) return void ($('#login-error').textContent = 'Please accept the terms and privacy policy to continue.');
+    $('#login-submit').disabled = true;
     try {
-      await api('/api/login', { method: 'POST', body: { password: $('#password').value } });
-      modal.close();
-      setOwner(true);
-      toast('Signed in');
-      if ($('#list')) loadJobs(); else route();
-      then?.();
-    } catch (err) { $('#login-error').textContent = err.message; }
+      await api('/api/auth/request', { method: 'POST', body: { email, acceptTerms: true } });
+      modal.querySelector('.modal-body').innerHTML = `<h2>Check your inbox</h2>
+        <p class="hint modal-lead">We sent a sign-in link to <strong>${esc(email)}</strong>. It works once and expires in 15 minutes. If it doesn't arrive, check your spam folder.</p>`;
+      modal.querySelector('.modal-foot').innerHTML = '<button type="button" class="btn btn-primary" id="login-done">Done</button>';
+      $('#login-done').onclick = () => modal.close();
+    } catch (err) {
+      $('#login-error').textContent = err.message;
+      $('#login-submit').disabled = false;
+    }
   };
 }
 
 function renderSignInPage(page) {
   const what = { saved: 'your saved jobs', applied: 'your applications', alerts: 'your email alerts' }[page] ?? 'this page';
-  $('#main').innerHTML = `<div class="page"><div class="panel empty"><h2>Sign in to see ${what}</h2><p>Saved jobs, applications and email alerts are private to the owner of this site.</p><button type="button" class="btn btn-primary" id="page-sign-in">Sign in</button></div></div>`;
+  $('#main').innerHTML = `<div class="page"><div class="panel empty"><h2>Sign in to see ${what}</h2><p>Create a free account with just your email address to save jobs, track applications and get alerts.</p><button type="button" class="btn btn-primary" id="page-sign-in">Sign in or create account</button></div></div>`;
   $('#page-sign-in').onclick = () => openLogin();
 }
 
@@ -769,7 +805,12 @@ $('#sign-in').onclick = () => openLogin();
 
 // ---------- boot ----------
 (async () => {
-  try { setOwner((await api('/api/me')).owner); } catch { setOwner(false); }
+  try { const me = await api('/api/me'); setUser(me.user, me.admin); } catch { setUser(null); }
+  // Coming back from the sign-in link after pressing "Create alert": reopen that dialog.
+  if (state.user && store.get('afterSignIn') === 'alert' && location.hash.startsWith('#/jobs')) {
+    store.set('afterSignIn', null);
+    setTimeout(() => openAlertModal(), 600);
+  }
   route();
   syncSearchInputs();
   pollStatus();

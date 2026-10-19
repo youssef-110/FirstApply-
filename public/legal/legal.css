@@ -1,0 +1,19 @@
+@import url('/app.css');
+
+.legal { max-width: 720px; margin: 0 auto; padding: 32px 24px 64px; }
+.legal .brand { margin-bottom: 32px; }
+.legal h1 { font-size: 30px; font-weight: 800; letter-spacing: -.015em; margin: 0 0 6px; }
+.legal h2 { font-size: 19px; font-weight: 700; margin: 36px 0 8px; }
+.legal h3 { font-size: 16px; font-weight: 700; margin: 22px 0 6px; }
+.legal p, .legal li { line-height: 1.65; color: var(--ink); }
+.legal ul { padding-left: 20px; }
+.legal li + li { margin-top: 4px; }
+.legal .updated { color: var(--ink-3); font-size: 14px; margin: 0 0 24px; }
+.legal address { font-style: normal; line-height: 1.7; }
+.legal .note { background: var(--field); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; }
+.legal table { border-collapse: collapse; width: 100%; font-size: 14px; margin: 8px 0; }
+.legal th, .legal td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.legal th { color: var(--ink-2); font-weight: 600; }
+.legal-nav { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-top: 48px; padding-top: 18px; border-top: 1px solid var(--line); font-size: 14px; }
+.legal-nav a { color: var(--ink-2); }
+@media (max-width: 600px) { .legal { padding: 20px 16px 48px; } .legal h1 { font-size: 25px; } }

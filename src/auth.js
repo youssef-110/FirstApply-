@@ -1,12 +1,14 @@
-// Single-owner auth. Anyone may browse jobs; the tracker, alerts and settings need the
-// owner password (OWNER_PASSWORD). Sessions are stateless HMAC-signed cookies.
-import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
+// Passwordless accounts. Anyone may browse jobs; signing in (via a one-time link sent by
+// email) unlocks saved jobs, the application tracker and email alerts.
+//
+// Sessions are HMAC-signed cookies carrying the user id and the user's session_version.
+// Bumping session_version (sign out everywhere, account deletion) revokes every cookie.
+import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { one, q } from './db.js';
 
 const COOKIE = 'fa_session';
-const SESSION_DAYS = 14;
-const MAX_FAILS = 8;          // per IP …
-const FAIL_WINDOW_MIN = 15;   // … per 15 minutes
+const SESSION_DAYS = 30;
+const LINK_MINUTES = 15;
 
 const secret = () => {
   const s = process.env.SESSION_SECRET;
@@ -15,13 +17,18 @@ const secret = () => {
 };
 
 // Hash both sides first so the comparison takes the same time whatever the lengths.
-const safeEqual = (a, b) => timingSafeEqual(
+export const safeEqual = (a, b) => timingSafeEqual(
   createHash('sha256').update(String(a)).digest(),
   createHash('sha256').update(String(b)).digest(),
 );
 
-// The password is part of the signed payload, so changing OWNER_PASSWORD signs out every session.
-const sign = (payload) => createHmac('sha256', secret()).update(`${payload}.${process.env.OWNER_PASSWORD ?? ''}`).digest('base64url');
+export const hmac = (payload) => createHmac('sha256', secret()).update(payload).digest('base64url');
+const sha256 = (s) => createHash('sha256').update(s).digest('hex');
+
+export const normalizeEmail = (raw) => {
+  const email = String(raw ?? '').trim().toLowerCase();
+  return email.length <= 254 && /^[^\s@<>()",;:]+@[^\s@<>()",;:]+\.[a-z]{2,}$/.test(email) ? email : null;
+};
 
 const readCookie = (req, name) => {
   for (const part of (req.headers.cookie ?? '').split(';')) {
@@ -31,50 +38,73 @@ const readCookie = (req, name) => {
   return null;
 };
 
-export const isOwner = (req) => {
-  const raw = readCookie(req, COOKIE);
-  if (!raw) return false;
-  const [exp, mac] = raw.split('.');
-  if (!exp || !mac || !safeEqual(mac, sign(`owner.${exp}`))) return false;
-  return Number(exp) > Date.now();
-};
-
 const cookieFlags = () => `Path=/; HttpOnly; SameSite=Lax${process.env.VERCEL || process.env.NODE_ENV === 'production' ? '; Secure' : ''}`;
 
 // On Vercel, x-vercel-forwarded-for / x-real-ip are set by the platform and can't be spoofed by
 // the client, unlike the left-most X-Forwarded-For entry.
-const clientIp = (req) => String(
+export const clientIp = (req) => String(
   (process.env.VERCEL && (req.headers['x-vercel-forwarded-for'] || req.headers['x-real-ip'])) || req.socket.remoteAddress || 'unknown',
 ).split(',')[0].trim().slice(0, 64);
 
-export const login = async (req, res) => {
-  const ip = clientIp(req);
-  const expected = process.env.OWNER_PASSWORD;
-  if (!expected || expected.length < 12) return res.status(503).json({ error: 'Sign-in is not set up on the server.' });
+/**
+ * Counts an event against a limit. Returns false once `max` events happened within
+ * `windowMinutes`. The event is recorded first, so parallel requests all count.
+ */
+export const rateLimit = async (key, max, windowMinutes) => {
+  await q('INSERT INTO rate_events (key) VALUES ($1)', [key]);
+  const { n } = await one(`SELECT count(*)::int AS n FROM rate_events
+                           WHERE key = $1 AND at > now() - make_interval(mins => $2)`, [key, windowMinutes]);
+  if (Math.random() < 0.05) await q("DELETE FROM rate_events WHERE at < now() - interval '2 days'");
+  return n <= max;
+};
 
-  // Record the attempt before checking, so parallel guesses all count against the limit.
-  const attempt = await one('INSERT INTO login_attempts (ip) VALUES ($1) RETURNING ctid::text AS ref', [ip]);
-  const { n } = await one(`SELECT count(*)::int AS n FROM login_attempts
-                           WHERE ip = $1 AND at > now() - make_interval(mins => $2)`, [ip, FAIL_WINDOW_MIN]);
-  if (n > MAX_FAILS) return res.status(429).json({ error: `Too many sign-in attempts. Try again in ${FAIL_WINDOW_MIN} minutes.` });
-  if (typeof req.body?.password !== 'string' || !safeEqual(req.body.password, expected)) {
-    await q("DELETE FROM login_attempts WHERE at < now() - interval '1 day'");
-    return res.status(401).json({ error: 'Wrong password.' });
-  }
-  await q('DELETE FROM login_attempts WHERE ctid::text = $1', [attempt.ref]); // a correct password is not a failure
+/** Returns the signed-in user ({ id, email, ... }) or null. Cached per request. */
+export const getUser = async (req) => {
+  if (req.user !== undefined) return req.user;
+  req.user = null;
+  const raw = readCookie(req, COOKIE);
+  const [uid, ver, exp, mac] = raw?.split('.') ?? [];
+  if (!uid || !ver || !exp || !mac) return null;
+  if (!safeEqual(mac, hmac(`session.${uid}.${ver}.${exp}`)) || Number(exp) < Date.now()) return null;
+  const user = await one('SELECT * FROM users WHERE id = $1 AND session_version = $2', [Number(uid), Number(ver)]);
+  req.user = user ?? null;
+  return req.user;
+};
+
+export const isAdmin = (user) => !!user && !!process.env.ADMIN_EMAIL && user.email === normalizeEmail(process.env.ADMIN_EMAIL);
+
+export const setSession = (res, user) => {
   const exp = Date.now() + SESSION_DAYS * 86400_000;
-  res.setHeader('Set-Cookie', `${COOKIE}=${exp}.${sign(`owner.${exp}`)}; Max-Age=${SESSION_DAYS * 86400}; ${cookieFlags()}`);
-  res.json({ owner: true });
+  const value = `${user.id}.${user.session_version}.${exp}`;
+  res.setHeader('Set-Cookie', `${COOKIE}=${value}.${hmac(`session.${value}`)}; Max-Age=${SESSION_DAYS * 86400}; ${cookieFlags()}`);
 };
 
-export const logout = (_req, res) => {
-  res.setHeader('Set-Cookie', `${COOKIE}=; Max-Age=0; ${cookieFlags()}`);
-  res.json({ owner: false });
+export const clearSession = (res) => res.setHeader('Set-Cookie', `${COOKIE}=; Max-Age=0; ${cookieFlags()}`);
+
+/** Creates a one-time sign-in token for an email; only its hash is stored. */
+export const createLoginToken = async (rawEmail) => {
+  const email = normalizeEmail(rawEmail);
+  if (!email) throw new Error('Invalid email address.');
+  const token = randomBytes(32).toString('base64url');
+  await q(`INSERT INTO login_tokens (token_hash, email, expires_at)
+           VALUES ($1, $2, now() + make_interval(mins => $3))`, [sha256(token), email, LINK_MINUTES]);
+  return token;
 };
 
-export const requireOwner = (req, res, next) => {
-  if (isOwner(req)) return next();
-  res.status(401).json({ error: 'Sign in to use this.' });
+/** Consumes a token (single use). Returns the email it was issued for, or null. */
+export const consumeLoginToken = async (token) => {
+  if (typeof token !== 'string' || token.length < 20 || token.length > 100) return null;
+  const row = await one(`UPDATE login_tokens SET used_at = now()
+    WHERE token_hash = $1 AND used_at IS NULL AND expires_at > now() RETURNING email`, [sha256(token)]);
+  if (Math.random() < 0.1) await q("DELETE FROM login_tokens WHERE expires_at < now() - interval '1 day'");
+  return row?.email ?? null;
+};
+
+export const requireUser = async (req, res, next) => {
+  try {
+    if (await getUser(req)) return next();
+    res.status(401).json({ error: 'Sign in to use this.' });
+  } catch (err) { next(err); }
 };
 
 /**
@@ -99,3 +129,7 @@ export const requireCron = (req, res, next) => {
   if (s && s.length >= 32 && safeEqual(header, `Bearer ${s}`)) return next();
   res.status(401).json({ error: 'Unauthorized' });
 };
+
+// Per-user unsubscribe links work without signing in, so they carry their own signature.
+export const unsubscribeToken = (userId) => hmac(`unsubscribe.${userId}`);
+export const checkUnsubscribeToken = (userId, token) => typeof token === 'string' && safeEqual(token, unsubscribeToken(userId));

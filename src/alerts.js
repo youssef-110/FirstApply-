@@ -1,10 +1,11 @@
 import { acquireLock, getSetting, one, q, releaseLock, setSetting } from './db.js';
 import { buildWhere, describeFilters, parseFilters } from './filters.js';
 import { mailProvider, sendMail } from './mailer.js';
+import { unsubscribeToken } from './auth.js';
 
 export const DIGEST_HOUR = Number(process.env.DIGEST_HOUR ?? 8); // Europe/Berlin
 const MAX_AGE_HOURS = 48; // never email a stale backlog (e.g. after email was off for days)
-const appUrl = () => process.env.APP_URL || `http://localhost:${process.env.PORT || 4380}`;
+export const appUrl = () => (process.env.APP_URL || `http://localhost:${process.env.PORT || 4380}`).replace(/\/$/, '');
 
 export const berlinHour = (date = new Date()) =>
   Number(new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Berlin', hour: 'numeric', hourCycle: 'h23' }).format(date));
@@ -14,7 +15,8 @@ const berlinDate = (date = new Date()) =>
 /** Records which alerts each freshly discovered job matches. */
 export const queueNewJobs = async (jobIds) => {
   if (!jobIds.length) return 0;
-  const alerts = await q('SELECT id, filters FROM alerts WHERE enabled');
+  const alerts = await q(`SELECT a.id, a.filters FROM alerts a JOIN users u ON u.id = a.user_id
+                          WHERE a.enabled AND NOT u.emails_paused`);
   let queued = 0;
   for (const alert of alerts) {
     const params = [alert.id, jobIds];
@@ -36,6 +38,17 @@ const LANG = { required: 'required', optional: 'a plus', not_required: 'not need
 const MODE = { remote: 'Remote', hybrid: 'Hybrid', onsite: 'On-site', unknown: '' };
 const euro = (v) => `€${Math.round(v).toLocaleString('de-DE')}`;
 
+const unsubscribeUrl = (userId) => `${appUrl()}/api/unsubscribe?u=${userId}&t=${unsubscribeToken(userId)}`;
+
+const layout = (inner, footer) => `<!doctype html><html><body style="margin:0;background:#F5F6F8;padding:24px 12px">
+  <table role="presentation" width="100%" style="max-width:600px;margin:0 auto;background:#fff;border-radius:12px;padding:8px 24px 24px">
+    <tr><td style="padding-top:20px;font:800 20px Arial,sans-serif;color:#14161B">Firstapply</td></tr>
+    ${inner}
+    <tr><td style="padding-top:24px;font:12px/1.6 Arial,sans-serif;color:#8A90A0">${footer}
+      <br><a href="${esc(appUrl())}/legal/imprint.html" style="color:#8A90A0">Imprint</a> &nbsp;·&nbsp;
+      <a href="${esc(appUrl())}/legal/privacy.html" style="color:#8A90A0">Privacy policy</a></td></tr>
+  </table></body></html>`;
+
 const jobBlock = (j) => {
   const meta = [j.company, j.city, MODE[j.working_mode]].filter(Boolean).map(esc).join(', ');
   const range = j.salary_max && j.salary_max !== j.salary_min ? `–${euro(j.salary_max)}` : j.salary_max ? '' : '+';
@@ -54,7 +67,7 @@ const jobBlock = (j) => {
   </td></tr>`;
 };
 
-const composeEmail = (groups) => {
+const composeAlertEmail = (groups, userId) => {
   const all = groups.flatMap((g) => g.jobs);
   const first = all[0];
   const subject = all.length === 1
@@ -63,24 +76,40 @@ const composeEmail = (groups) => {
   const sections = groups.map((g) => `
     <tr><td style="padding:24px 0 4px;font:600 13px Arial,sans-serif;color:#0F8A5A">${esc(g.name)} (${g.jobs.length})</td></tr>
     ${g.jobs.map(jobBlock).join('')}`).join('');
-  const html = `<!doctype html><html><body style="margin:0;background:#F5F6F8;padding:24px 12px">
-    <table role="presentation" width="100%" style="max-width:600px;margin:0 auto;background:#fff;border-radius:12px;padding:8px 24px 24px">
-      <tr><td style="padding-top:20px;font:800 20px Arial,sans-serif;color:#14161B">Firstapply</td></tr>
-      ${sections}
-      <tr><td style="padding-top:20px;font:12px/1.5 Arial,sans-serif;color:#8A90A0">You get this because of your alerts on Firstapply. <a href="${esc(appUrl())}/#/alerts" style="color:#2347D9">Manage alerts</a></td></tr>
-    </table></body></html>`;
+  const unsub = unsubscribeUrl(userId);
+  const html = layout(sections, `You get this email because you set up job alerts on Firstapply.
+    <a href="${esc(appUrl())}/#/alerts" style="color:#2347D9">Manage alerts</a> or
+    <a href="${esc(unsub)}" style="color:#2347D9">unsubscribe from all alert emails</a>.`);
   const text = groups.map((g) => `${g.name}\n` + g.jobs.map((j) =>
-    `- ${j.title} at ${j.company} (${j.city ?? 'Germany'})\n  Apply: ${safeUrl(j.apply_url)}`).join('\n')).join('\n\n');
-  return { subject, html, text };
+    `- ${j.title} at ${j.company} (${j.city ?? 'Germany'})\n  Apply: ${safeUrl(j.apply_url)}`).join('\n')).join('\n\n')
+    + `\n\nUnsubscribe from all alert emails: ${unsub}`;
+  // RFC 8058 one-click unsubscribe, shown as "Unsubscribe" by Gmail and others.
+  const headers = { 'List-Unsubscribe': `<${unsub}>`, 'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click' };
+  return { subject, html, text, headers };
 };
 
-/** Sends one email holding every due match, grouped by alert. */
+export const sendSignInEmail = async (email, link) => {
+  const html = layout(`
+    <tr><td style="padding-top:16px;font:15px/1.6 Arial,sans-serif;color:#14161B">Use this button to sign in to Firstapply. The link works once and expires in 15 minutes.</td></tr>
+    <tr><td style="padding-top:20px"><a href="${esc(link)}" style="display:inline-block;background:#2347D9;color:#fff;text-decoration:none;font:600 15px Arial,sans-serif;padding:11px 20px;border-radius:8px">Sign in to Firstapply</a></td></tr>
+    <tr><td style="padding-top:16px;font:12px/1.5 Arial,sans-serif;color:#8A90A0;word-break:break-all">Or paste this link into your browser: ${esc(link)}</td></tr>`,
+  'If you didn\'t ask to sign in, ignore this email. No account is created unless the link is used.');
+  await sendMail({
+    to: email,
+    subject: 'Your Firstapply sign-in link',
+    html,
+    text: `Sign in to Firstapply (the link works once and expires in 15 minutes):\n${link}\n\nIf you didn't ask to sign in, ignore this email.`,
+  });
+};
+
+/** Sends each user one email holding all their due matches, grouped by alert. */
 export const sendPending = async ({ force = false } = {}) => {
-  const to = await getSetting('email');
-  if (!to || !mailProvider()) return { sent: 0, reason: 'email-not-configured' };
+  if (!mailProvider()) return { sent: 0, reason: 'email-not-configured' };
   // Two overlapping ticks must not both email the same matches.
-  const lock = await acquireLock('email', 120);
+  const lock = await acquireLock('email', 280);
   if (!lock) return { sent: 0, reason: 'already sending' };
+  let sent = 0;
+  const failures = [];
   try {
     await q(`UPDATE deliveries SET skipped = true WHERE sent_at IS NULL AND NOT skipped
              AND created_at < now() - make_interval(hours => $1)`, [MAX_AGE_HOURS]);
@@ -88,51 +117,63 @@ export const sendPending = async ({ force = false } = {}) => {
     const today = berlinDate();
     const digestDue = force || (berlinHour() >= DIGEST_HOUR && (await getSetting('lastDigest')) !== today);
     const rows = (await q(`
-      SELECT d.alert_id, d.dedupe_key, a.name AS alert_name, a.frequency, j.*
-      FROM deliveries d JOIN alerts a ON a.id = d.alert_id JOIN jobs j ON j.id = d.job_id
-      WHERE d.sent_at IS NULL AND NOT d.skipped AND a.enabled
-      ORDER BY d.alert_id, j.posted_at DESC NULLS LAST`))
+      SELECT d.alert_id, d.dedupe_key, a.name AS alert_name, a.frequency, u.id AS user_id, u.email AS user_email, j.*
+      FROM deliveries d
+        JOIN alerts a ON a.id = d.alert_id
+        JOIN users u ON u.id = a.user_id
+        JOIN jobs j ON j.id = d.job_id
+      WHERE d.sent_at IS NULL AND NOT d.skipped AND a.enabled AND NOT u.emails_paused
+      ORDER BY u.id, d.alert_id, j.posted_at DESC NULLS LAST
+      LIMIT 5000`))
       .filter((r) => r.frequency === 'instant' || digestDue);
-    if (!rows.length) return { sent: 0 };
 
-    const groups = new Map();
-    const seen = new Set();
+    const byUser = new Map();
     for (const r of rows) {
-      if (!groups.has(r.alert_id)) groups.set(r.alert_id, { name: r.alert_name, jobs: [] });
-      if (seen.has(r.dedupe_key)) continue; // same job matched two alerts: show it once
-      seen.add(r.dedupe_key);
-      groups.get(r.alert_id).jobs.push(r);
+      if (!byUser.has(r.user_id)) byUser.set(r.user_id, { email: r.user_email, rows: [] });
+      byUser.get(r.user_id).rows.push(r);
     }
-    await sendMail({ to, ...composeEmail([...groups.values()].filter((g) => g.jobs.length)) });
 
-    await q(`UPDATE deliveries d SET sent_at = now() FROM unnest($1::int[], $2::text[]) AS u(alert_id, dedupe_key)
-             WHERE d.alert_id = u.alert_id AND d.dedupe_key = u.dedupe_key`,
-      [rows.map((r) => r.alert_id), rows.map((r) => r.dedupe_key)]);
+    for (const [userId, { email, rows: userRows }] of byUser) {
+      const groups = new Map();
+      const seen = new Set();
+      for (const r of userRows) {
+        if (!groups.has(r.alert_id)) groups.set(r.alert_id, { name: r.alert_name, jobs: [] });
+        if (seen.has(r.dedupe_key)) continue; // same job matched two alerts: show it once
+        seen.add(r.dedupe_key);
+        groups.get(r.alert_id).jobs.push(r);
+      }
+      try {
+        await sendMail({ to: email, ...composeAlertEmail([...groups.values()].filter((g) => g.jobs.length), userId) });
+        await q(`UPDATE deliveries d SET sent_at = now() FROM unnest($1::int[], $2::text[]) AS u(alert_id, dedupe_key)
+                 WHERE d.alert_id = u.alert_id AND d.dedupe_key = u.dedupe_key`,
+          [userRows.map((r) => r.alert_id), userRows.map((r) => r.dedupe_key)]);
+        await q('UPDATE users SET last_email_at = now(), last_email_error = NULL WHERE id = $1', [userId]);
+        sent += seen.size;
+      } catch (err) {
+        // One bad address must not stop everyone else's alerts.
+        failures.push(userId);
+        await q('UPDATE users SET last_email_error = $2 WHERE id = $1', [userId, err.message.slice(0, 300)]);
+        console.error(`[alerts] email to user ${userId} failed:`, err.message);
+      }
+    }
     if (rows.some((r) => r.frequency === 'daily')) await setSetting('lastDigest', today);
-    await setSetting('lastEmail', JSON.stringify({ at: new Date().toISOString(), jobs: seen.size, to }));
-    console.log(`[alerts] emailed ${seen.size} jobs`);
-    return { sent: seen.size };
-  } catch (err) {
-    await setSetting('lastEmailError', JSON.stringify({ at: new Date().toISOString(), message: err.message }));
-    console.error('[alerts] email failed:', err.message);
-    return { sent: 0, error: err.message };
+    if (sent) console.log(`[alerts] emailed ${sent} jobs to ${byUser.size - failures.length} users`);
+    return { sent, users: byUser.size, failed: failures.length };
   } finally {
     await releaseLock('email', lock).catch(() => {});
   }
 };
 
-const sampleEmail = async () => {
+const sampleEmail = async (userId) => {
   const jobs = await q(`SELECT * FROM jobs WHERE active AND dup_of IS NULL AND source = 'wsj' ORDER BY posted_at DESC LIMIT 2`);
-  return composeEmail([{ name: 'Test email: this is how alerts look', jobs }]);
+  return composeAlertEmail([{ name: 'Test email: this is how alerts look', jobs }], userId);
 };
-export const previewEmailHtml = async () => (await sampleEmail()).html;
+export const previewEmailHtml = async (userId) => (await sampleEmail(userId)).html;
 
-export const sendTestEmail = async () => {
-  const to = await getSetting('email');
-  if (!to) throw new Error('Add an email address first.');
-  const { html, text } = await sampleEmail();
-  await sendMail({ to, subject: 'Firstapply test email', html, text });
-  return { to };
+export const sendTestEmail = async (user) => {
+  const { html, text, headers } = await sampleEmail(user.id);
+  await sendMail({ to: user.email, subject: 'Firstapply test email', html, text, headers });
+  return { to: user.email };
 };
 
 export const describeAlert = (filters) => describeFilters(parseFilters(filters));

@@ -63,8 +63,42 @@ const SCHEMA = `
 
   CREATE TABLE IF NOT EXISTS settings (key text PRIMARY KEY, value text NOT NULL);
 
-  CREATE TABLE IF NOT EXISTS login_attempts (ip text NOT NULL, at timestamptz NOT NULL DEFAULT now());
-  CREATE INDEX IF NOT EXISTS login_attempts_ip ON login_attempts (ip, at);
+  -- Accounts (passwordless: sign-in links are sent by email)
+  CREATE TABLE IF NOT EXISTS users (
+    id                serial PRIMARY KEY,
+    email             text NOT NULL UNIQUE,            -- stored lower-case
+    created_at        timestamptz NOT NULL DEFAULT now(),
+    terms_accepted_at timestamptz,
+    last_login_at     timestamptz,
+    session_version   integer NOT NULL DEFAULT 1,      -- bump to sign out every device
+    emails_paused     boolean NOT NULL DEFAULT false,  -- set by the unsubscribe link
+    last_email_at     timestamptz,
+    last_email_error  text
+  );
+
+  CREATE TABLE IF NOT EXISTS login_tokens (
+    token_hash text PRIMARY KEY,                       -- sha256 of the emailed token
+    email      text NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    expires_at timestamptz NOT NULL,
+    used_at    timestamptz
+  );
+
+  CREATE TABLE IF NOT EXISTS rate_events (key text NOT NULL, at timestamptz NOT NULL DEFAULT now());
+  CREATE INDEX IF NOT EXISTS rate_events_key ON rate_events (key, at);
+
+  ALTER TABLE alerts ADD COLUMN IF NOT EXISTS user_id integer REFERENCES users(id) ON DELETE CASCADE;
+  CREATE INDEX IF NOT EXISTS alerts_user ON alerts (user_id);
+
+  CREATE TABLE IF NOT EXISTS user_job_status (
+    user_id    integer NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    job_id     text NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+    status     text NOT NULL,   -- saved | applied | interviewing | offer | rejected | hidden
+    notes      text NOT NULL DEFAULT '',
+    applied_at timestamptz,
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (user_id, job_id)
+  );
 `;
 
 let runner;
