@@ -747,6 +747,18 @@ function setUser(user, admin = false) {
   if (user) updateCounts();
 }
 
+/** Re-reads the session and redraws the page if it changed (e.g. signed in on another tab). */
+async function refreshSignIn() {
+  const me = await api('/api/me').catch(() => null);
+  if (!me?.user || state.user?.email === me.user.email) return;
+  setUser(me.user, me.admin);
+  store.set('afterSignIn', null);
+  toast(`Signed in as ${me.user.email}`);
+  if ($('#list')) loadJobs(); else route();
+}
+// A sign-in link opened in another tab of this browser signs this tab in when you come back.
+document.addEventListener('visibilitychange', () => { if (!document.hidden && !state.user) refreshSignIn(); });
+
 function openLogin({ then } = {}) {
   if (then) store.set('afterSignIn', 'alert');
   const modal = $('#modal');
@@ -773,9 +785,28 @@ function openLogin({ then } = {}) {
     try {
       await api('/api/auth/request', { method: 'POST', body: { email, acceptTerms: true } });
       modal.querySelector('.modal-body').innerHTML = `<h2>Check your inbox</h2>
-        <p class="hint modal-lead">We sent a sign-in link to <strong>${esc(email)}</strong>. It works once and expires in 15 minutes. If it doesn't arrive, check your spam folder.</p>`;
-      modal.querySelector('.modal-foot').innerHTML = '<button type="button" class="btn btn-primary" id="login-done">Done</button>';
-      $('#login-done').onclick = () => modal.close();
+        <p class="hint modal-lead">We sent a 6-digit code to <strong>${esc(email)}</strong>. Enter it here to sign in. It expires in 15 minutes. If it doesn't arrive, check your spam folder.</p>
+        <div><label class="label" for="login-code">Sign-in code</label>
+          <input class="input code-input" id="login-code" inputmode="numeric" autocomplete="one-time-code" maxlength="7" pattern="[0-9 ]*" required></div>
+        <p class="login-error" id="login-error" role="alert"></p>`;
+      modal.querySelector('.modal-foot').innerHTML = '<button type="button" class="btn btn-ghost" id="login-cancel">Cancel</button><button class="btn btn-primary" type="submit" id="login-submit">Sign in</button>';
+      $('#login-cancel').onclick = () => modal.close();
+      $('#login-code').focus();
+      $('#login-form').onsubmit = async (ev) => {
+        ev.preventDefault();
+        const code = $('#login-code').value.replace(/\s+/g, '');
+        if (!/^\d{6}$/.test(code)) return void ($('#login-error').textContent = 'Enter the 6-digit code from the email.');
+        $('#login-submit').disabled = true;
+        try {
+          await api('/api/auth/verify', { method: 'POST', body: { email, code } });
+          modal.close();
+          await refreshSignIn();
+          then?.();
+        } catch (err) {
+          $('#login-error').textContent = err.message;
+          $('#login-submit').disabled = false;
+        }
+      };
     } catch (err) {
       $('#login-error').textContent = err.message;
       $('#login-submit').disabled = false;

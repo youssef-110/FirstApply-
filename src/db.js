@@ -84,6 +84,11 @@ const SCHEMA = `
     used_at    timestamptz
   );
 
+  -- 6-digit code sent with the link, for signing in on a different browser or device
+  ALTER TABLE login_tokens ADD COLUMN IF NOT EXISTS code_hash text;
+  ALTER TABLE login_tokens ADD COLUMN IF NOT EXISTS attempts integer NOT NULL DEFAULT 0;
+  CREATE INDEX IF NOT EXISTS login_tokens_email ON login_tokens (email, created_at DESC);
+
   CREATE TABLE IF NOT EXISTS rate_events (key text NOT NULL, at timestamptz NOT NULL DEFAULT now());
   CREATE INDEX IF NOT EXISTS rate_events_key ON rate_events (key, at);
 

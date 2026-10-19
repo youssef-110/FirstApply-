@@ -3,7 +3,7 @@
 //
 // Sessions are HMAC-signed cookies carrying the user id and the user's session_version.
 // Bumping session_version (sign out everywhere, account deletion) revokes every cookie.
-import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, randomBytes, randomInt, timingSafeEqual } from 'node:crypto';
 import { one, q } from './db.js';
 
 const COOKIE = 'fa_session';
@@ -99,14 +99,42 @@ export const setSession = (res, user) => {
 
 export const clearSession = (res) => res.setHeader('Set-Cookie', `${COOKIE}=; Max-Age=0; ${cookieFlags()}`);
 
-/** Creates a one-time sign-in token for an email; only its hash is stored. */
+const MAX_CODE_ATTEMPTS = 5;
+// Keyed with the server secret, so a leaked database can't be brute-forced for codes.
+const codeHash = (email, code) => hmac(`code.${email}.${code}`);
+
+/**
+ * Creates a one-time sign-in link token plus a 6-digit code for the same sign-in (the code
+ * works in whatever browser the person started from). Only hashes are stored.
+ */
 export const createLoginToken = async (rawEmail) => {
   const email = normalizeEmail(rawEmail);
   if (!email) throw new Error('Invalid email address.');
   const token = randomBytes(32).toString('base64url');
-  await q(`INSERT INTO login_tokens (token_hash, email, expires_at)
-           VALUES ($1, $2, now() + make_interval(mins => $3))`, [sha256(token), email, LINK_MINUTES]);
-  return token;
+  const code = String(randomInt(0, 1_000_000)).padStart(6, '0');
+  await q(`INSERT INTO login_tokens (token_hash, email, code_hash, expires_at)
+           VALUES ($1, $2, $3, now() + make_interval(mins => $4))`, [sha256(token), email, codeHash(email, code), LINK_MINUTES]);
+  return { token, code };
+};
+
+/**
+ * Checks a 6-digit code against the newest unused sign-in for that email. Five wrong tries
+ * burn that sign-in, so guessing (1 in a million per try) is hopeless. Returns the email or null.
+ */
+export const consumeLoginCode = async (rawEmail, rawCode) => {
+  const email = normalizeEmail(rawEmail);
+  const code = String(rawCode ?? '').replace(/\s+/g, '');
+  if (!email || !/^\d{6}$/.test(code)) return null;
+  const row = await one(`SELECT token_hash, code_hash FROM login_tokens
+    WHERE email = $1 AND used_at IS NULL AND expires_at > now() AND code_hash IS NOT NULL AND attempts < $2
+    ORDER BY created_at DESC LIMIT 1`, [email, MAX_CODE_ATTEMPTS]);
+  if (!row) return null;
+  if (!safeEqual(row.code_hash, codeHash(email, code))) {
+    await q('UPDATE login_tokens SET attempts = attempts + 1 WHERE token_hash = $1', [row.token_hash]);
+    return null;
+  }
+  const used = await one('UPDATE login_tokens SET used_at = now() WHERE token_hash = $1 AND used_at IS NULL RETURNING email', [row.token_hash]);
+  return used?.email ?? null;
 };
 
 /** Consumes a token (single use). Returns the email it was issued for, or null. */

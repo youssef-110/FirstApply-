@@ -414,3 +414,4 @@ h1, h2, h3 { margin: 0; line-height: 1.25; }
 @media (max-width: 860px) { .site-footer-inner { padding: 16px; } .site-footer-inner nav { margin-left: 0; } }
 body { min-height: 100vh; display: flex; flex-direction: column; }
 #main { flex: 1; }
+.code-input { font-size: 22px; letter-spacing: 6px; font-weight: 700; font-variant-numeric: tabular-nums; height: 48px; }

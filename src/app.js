@@ -7,7 +7,7 @@ import { alertCounts, appUrl, describeAlert, previewEmailHtml, sendSignInEmail, 
 import { mailProvider } from './mailer.js';
 import { syncSource, syncStatus, tick } from './sync.js';
 import {
-  checkUnsubscribeToken, clearSession, clientIp, consumeLoginToken, createLoginToken, getUser, isAdmin,
+  checkUnsubscribeToken, clearSession, clientIp, consumeLoginCode, consumeLoginToken, createLoginToken, getUser, isAdmin,
   giveBack, normalizeEmail, rateLimit, requireCron, requireUser, sameOrigin, setSession, takeQuota,
 } from './auth.js';
 
@@ -82,17 +82,24 @@ app.post('/api/auth/request', ah(async (req, res) => {
   res.json({ sent: true });
   if (!allowed) return console.warn(`[auth] sign-in email skipped (${known ? "existing" : "new"} address, limit reached)`);
   const send = (async () => {
-    const token = await createLoginToken(email);
+    const { token, code } = await createLoginToken(email);
     // The token sits in the URL fragment, so it never reaches server or proxy logs.
-    await sendSignInEmail(email, `${appUrl()}/signin.html#t=${token}`);
+    await sendSignInEmail(email, `${appUrl()}/signin.html#t=${token}`, code);
   })().catch((err) => console.error('[auth] sign-in email failed:', err.message));
   waitUntil(send); // keeps the serverless function alive until the email is sent
 }));
 
 app.post('/api/auth/verify', ah(async (req, res) => {
   if (!(await rateLimit(`verify-ip:${clientIp(req)}`, 30, 15))) return tooMany(res, 15);
-  const email = await consumeLoginToken(req.body?.token);
-  if (!email) return res.status(400).json({ error: 'This sign-in link has expired or was already used. Request a new one.' });
+  // Either the link token (same browser) or email + 6-digit code (typed in any browser).
+  const email = req.body?.code !== undefined
+    ? await consumeLoginCode(req.body?.email, req.body.code)
+    : await consumeLoginToken(req.body?.token);
+  if (!email) {
+    return res.status(400).json({ error: req.body?.code !== undefined
+      ? "That code isn't right or has expired. Check the latest email, or request a new code."
+      : 'This sign-in link has expired or was already used. Request a new one.' });
+  }
   const user = await one(`
     INSERT INTO users (email, terms_accepted_at, last_login_at) VALUES ($1, now(), now())
     ON CONFLICT (email) DO UPDATE SET last_login_at = now(),

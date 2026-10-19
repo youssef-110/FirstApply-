@@ -26,7 +26,7 @@ const call = async (path, { method = 'GET', body, cookie } = {}) => {
   return { status: res.status, json, cookie: res.headers.get('set-cookie')?.split(';')[0] };
 };
 const signIn = async (email) => {
-  const token = await createLoginToken(email);
+  const { token } = await createLoginToken(email);
   const r = await call('/api/auth/verify', { method: 'POST', body: { token } });
   assert.equal(r.status, 200, 'verify works');
   const again = await call('/api/auth/verify', { method: 'POST', body: { token } });
@@ -87,6 +87,18 @@ assert.equal((await q("SELECT count(*)::int AS n FROM users WHERE email = 'anna@
 assert.equal((await q('SELECT count(*)::int AS n FROM alerts WHERE id = $1', [alert.id]))[0].n, 0);
 assert.equal((await q('SELECT count(*)::int AS n FROM user_job_status WHERE user_id = $1', [annaId]))[0].n, 0);
 assert.equal((await call('/api/me', { cookie: anna })).json.user, null, 'deleted user is signed out');
+
+// 6-digit code sign-in: wrong codes count, 5 wrong tries burn the code, right code signs in once.
+const { code } = await createLoginToken('cara@example.com');
+const wrong = code === '000000' ? '111111' : '000000';
+assert.equal((await call('/api/auth/verify', { method: 'POST', body: { email: 'cara@example.com', code: wrong } })).status, 400);
+const ok = await call('/api/auth/verify', { method: 'POST', body: { email: 'Cara@Example.com', code } });
+assert.equal(ok.status, 200, 'right code signs in');
+assert.equal((await call('/api/me', { cookie: ok.cookie })).json.user.email, 'cara@example.com');
+assert.equal((await call('/api/auth/verify', { method: 'POST', body: { email: 'cara@example.com', code } })).status, 400, 'code is single use');
+const { code: code2 } = await createLoginToken('dan@example.com');
+for (let i = 0; i < 5; i++) await call('/api/auth/verify', { method: 'POST', body: { email: 'dan@example.com', code: code2 === '123456' ? '654321' : '123456' } });
+assert.equal((await call('/api/auth/verify', { method: 'POST', body: { email: 'dan@example.com', code: code2 } })).status, 400, '5 wrong tries burn the code');
 
 console.log('all account tests passed');
 server.close();

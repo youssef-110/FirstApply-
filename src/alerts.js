@@ -88,17 +88,18 @@ const composeAlertEmail = (groups, userId) => {
   return { subject, html, text, headers };
 };
 
-export const sendSignInEmail = async (email, link) => {
+export const sendSignInEmail = async (email, link, code) => {
   const html = layout(`
-    <tr><td style="padding-top:16px;font:15px/1.6 Arial,sans-serif;color:#14161B">Use this button to sign in to Firstapply. The link works once and expires in 15 minutes.</td></tr>
-    <tr><td style="padding-top:20px"><a href="${esc(link)}" style="display:inline-block;background:#2347D9;color:#fff;text-decoration:none;font:600 15px Arial,sans-serif;padding:11px 20px;border-radius:8px">Sign in to Firstapply</a></td></tr>
-    <tr><td style="padding-top:16px;font:12px/1.5 Arial,sans-serif;color:#8A90A0;word-break:break-all">Or paste this link into your browser: ${esc(link)}</td></tr>`,
-  'If you didn\'t ask to sign in, ignore this email. No account is created unless the link is used.');
+    <tr><td style="padding-top:16px;font:15px/1.6 Arial,sans-serif;color:#14161B">Your sign-in code for Firstapply:</td></tr>
+    <tr><td style="padding-top:10px;font:700 32px/1.2 Arial,sans-serif;letter-spacing:6px;color:#14161B">${esc(code)}</td></tr>
+    <tr><td style="padding-top:10px;font:14px/1.6 Arial,sans-serif;color:#4A5060">Type it into the Firstapply window where you asked to sign in. Or use the button, if you're in the same browser. Both work once and expire in 15 minutes.</td></tr>
+    <tr><td style="padding-top:18px"><a href="${esc(link)}" style="display:inline-block;background:#2347D9;color:#fff;text-decoration:none;font:600 15px Arial,sans-serif;padding:11px 20px;border-radius:8px">Sign in to Firstapply</a></td></tr>`,
+  'If you didn\'t ask to sign in, ignore this email. No account is created unless the code or link is used.');
   await sendMail({
     to: email,
-    subject: 'Your Firstapply sign-in link',
+    subject: `${code} is your Firstapply sign-in code`,
     html,
-    text: `Sign in to Firstapply (the link works once and expires in 15 minutes):\n${link}\n\nIf you didn't ask to sign in, ignore this email.`,
+    text: `Your Firstapply sign-in code: ${code}\n\nType it into the Firstapply window where you asked to sign in, or open this link in the same browser:\n${link}\n\nBoth work once and expire in 15 minutes. If you didn't ask to sign in, ignore this email.`,
   });
 };
 
