@@ -8,7 +8,7 @@ import { mailProvider } from './mailer.js';
 import { syncSource, syncStatus, tick } from './sync.js';
 import {
   checkUnsubscribeToken, clearSession, clientIp, consumeLoginToken, createLoginToken, getUser, isAdmin,
-  normalizeEmail, rateLimit, requireCron, requireUser, sameOrigin, setSession,
+  normalizeEmail, rateLimit, requireCron, requireUser, sameOrigin, setSession, takeQuota,
 } from './auth.js';
 
 export const app = express();
@@ -53,25 +53,23 @@ app.post('/api/auth/request', ah(async (req, res) => {
   if (!(await rateLimit(`signin-ip-email:${ip}:${email}`, 3, 15))) return tooMany(res, 15);
 
   // Silent limits: past these, no email is sent but the answer is identical, so they reveal
-  // nothing about whether an address has an account.
-  //  - per address, per hour: stops anyone flooding one inbox from many IPs, while keeping
-  //    any lockout short (an hour, not a day)
-  //  - per pool: keeps the total under the email provider's daily quota. New and existing
-  //    addresses have separate pools, so fake sign-ups can't use up existing users' budget.
-  //    An existing account's first 2 sign-ins of the day never touch the shared pool, so a
-  //    few addresses requesting over and over can't drain it for everyone else.
+  // nothing about whether an address has an account. They only count emails actually sent
+  // (takeQuota), so hammering a limit doesn't keep it tripped.
+  //  - per address, per hour: caps how fast anyone can fill one inbox, while any lockout of
+  //    the owner lasts at most an hour
+  //  - per pool, per day: keeps the total under the email provider's quota (a hard limit we
+  //    can't exceed without breaking email for everyone). New and existing addresses have
+  //    separate pools, so fake sign-ups can't use up existing users' budget, and an existing
+  //    account's first 2 sign-ins a day may use the whole pool while repeat requests stop
+  //    at a lower soft cap.
   const gmail = mailProvider() === 'gmail';
   const known = await one('SELECT 1 FROM users WHERE email = $1', [email]);
-  let allowed = (await rateLimit(`signin-email-hour:${email}`, 6, 60))
-    && (await rateLimit(`signin-email-day:${email}`, 20, 60 * 24));
+  let allowed = await takeQuota(`signin-email-hour:${email}`, 6, 60);
   if (allowed && known) {
-    // Hard ceiling over every existing-account send (keeps the total under the provider
-    // quota); sends beyond an account's daily reserve must also fit under a lower soft cap.
-    const reserved = await rateLimit(`signin-known-reserved:${email}`, 2, 60 * 24);
-    allowed = await rateLimit('signin-known-total', gmail ? 200 : 40, 60 * 24);
-    if (allowed && !reserved) allowed = await rateLimit('signin-known', gmail ? 100 : 20, 60 * 24);
+    const firstToday = await takeQuota(`signin-known-reserved:${email}`, 2, 60 * 24);
+    allowed = await takeQuota('signin-known', firstToday ? (gmail ? 200 : 40) : (gmail ? 100 : 20), 60 * 24);
   } else if (allowed) {
-    allowed = await rateLimit('signin-new', Number(process.env.SIGNUP_DAILY_LIMIT || (gmail ? 150 : 30)), 60 * 24);
+    allowed = await takeQuota('signin-new', Number(process.env.SIGNUP_DAILY_LIMIT || (gmail ? 150 : 30)), 60 * 24);
   }
 
   // Answer first, send afterwards: every path takes the same time, so response timing can't

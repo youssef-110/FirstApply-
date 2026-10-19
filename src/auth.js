@@ -58,6 +58,18 @@ export const rateLimit = async (key, max, windowMinutes) => {
   return n <= max;
 };
 
+/**
+ * Takes one unit from a shared budget only if it isn't used up. Unlike rateLimit, refused
+ * requests are not recorded, so a flood can't keep a budget exhausted by hammering it.
+ */
+export const takeQuota = async (key, max, windowMinutes) => {
+  const row = await one(`INSERT INTO rate_events (key)
+    SELECT $1 WHERE (SELECT count(*) FROM rate_events
+                     WHERE key = $1 AND at > now() - make_interval(mins => $3)) < $2
+    RETURNING 1 AS ok`, [key, max, windowMinutes]);
+  return !!row;
+};
+
 /** Returns the signed-in user ({ id, email, ... }) or null. Cached per request. */
 export const getUser = async (req) => {
   if (req.user !== undefined) return req.user;
