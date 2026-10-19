@@ -59,16 +59,22 @@ export const rateLimit = async (key, max, windowMinutes) => {
 };
 
 /**
- * Takes one unit from a shared budget only if it isn't used up. Unlike rateLimit, refused
- * requests are not recorded, so a flood can't keep a budget exhausted by hammering it.
+ * Takes one unit from a shared budget only if it isn't used up. Returns a receipt (pass it
+ * to giveBack to undo) or null. Unlike rateLimit, refused requests are not kept, so a flood
+ * can't keep a budget exhausted by hammering it.
+ *
+ * Insert first, then count, then undo if over: concurrent requests can't all slip under the
+ * limit. Under contention it errs on the safe side (may refuse a few extra), never over.
  */
 export const takeQuota = async (key, max, windowMinutes) => {
-  const row = await one(`INSERT INTO rate_events (key)
-    SELECT $1 WHERE (SELECT count(*) FROM rate_events
-                     WHERE key = $1 AND at > now() - make_interval(mins => $3)) < $2
-    RETURNING 1 AS ok`, [key, max, windowMinutes]);
-  return !!row;
+  const { ref } = await one('INSERT INTO rate_events (key) VALUES ($1) RETURNING ctid::text AS ref', [key]);
+  const { n } = await one(`SELECT count(*)::int AS n FROM rate_events
+                           WHERE key = $1 AND at > now() - make_interval(mins => $2)`, [key, windowMinutes]);
+  if (n <= max) return { key, ref };
+  await giveBack({ key, ref });
+  return null;
 };
+export const giveBack = (receipt) => receipt && q('DELETE FROM rate_events WHERE key = $1 AND ctid::text = $2', [receipt.key, receipt.ref]);
 
 /** Returns the signed-in user ({ id, email, ... }) or null. Cached per request. */
 export const getUser = async (req) => {

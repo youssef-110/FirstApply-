@@ -8,7 +8,7 @@ import { mailProvider } from './mailer.js';
 import { syncSource, syncStatus, tick } from './sync.js';
 import {
   checkUnsubscribeToken, clearSession, clientIp, consumeLoginToken, createLoginToken, getUser, isAdmin,
-  normalizeEmail, rateLimit, requireCron, requireUser, sameOrigin, setSession, takeQuota,
+  giveBack, normalizeEmail, rateLimit, requireCron, requireUser, sameOrigin, setSession, takeQuota,
 } from './auth.js';
 
 export const app = express();
@@ -64,13 +64,18 @@ app.post('/api/auth/request', ah(async (req, res) => {
   //    at a lower soft cap.
   const gmail = mailProvider() === 'gmail';
   const known = await one('SELECT 1 FROM users WHERE email = $1', [email]);
-  let allowed = await takeQuota(`signin-email-hour:${email}`, 6, 60);
+  // Units taken by earlier checks are given back if a later one refuses, so nothing is used
+  // up without an email actually going out.
+  const perAddress = await takeQuota(`signin-email-hour:${email}`, 6, 60);
+  let allowed = !!perAddress;
   if (allowed && known) {
     const firstToday = await takeQuota(`signin-known-reserved:${email}`, 2, 60 * 24);
-    allowed = await takeQuota('signin-known', firstToday ? (gmail ? 200 : 40) : (gmail ? 100 : 20), 60 * 24);
+    allowed = !!(await takeQuota('signin-known', firstToday ? (gmail ? 200 : 40) : (gmail ? 100 : 20), 60 * 24));
+    if (!allowed) await giveBack(firstToday);
   } else if (allowed) {
-    allowed = await takeQuota('signin-new', Number(process.env.SIGNUP_DAILY_LIMIT || (gmail ? 150 : 30)), 60 * 24);
+    allowed = !!(await takeQuota('signin-new', Number(process.env.SIGNUP_DAILY_LIMIT || (gmail ? 150 : 30)), 60 * 24));
   }
+  if (!allowed) await giveBack(perAddress);
 
   // Answer first, send afterwards: every path takes the same time, so response timing can't
   // reveal which limit applied or whether the address has an account.
