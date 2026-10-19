@@ -1,0 +1,23 @@
+{
+  "name": "firstapply",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Firstapply: new student jobs in Germany, emailed to you with the apply link as soon as they are posted.",
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning --env-file-if-exists=.env src/server.js",
+    "dev": "node --watch --env-file-if-exists=.env src/server.js",
+    "db:setup": "node --env-file-if-exists=.env scripts/setup-db.js"
+  },
+  "engines": {
+    "node": "22.x"
+  },
+  "dependencies": {
+    "@neondatabase/serverless": "^1.2.0",
+    "@vercel/functions": "^2.2.13",
+    "express": "^4.21.2"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.10"
+  }
+}
