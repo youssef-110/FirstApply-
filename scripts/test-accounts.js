@@ -100,6 +100,14 @@ const { code: code2 } = await createLoginToken('dan@example.com');
 for (let i = 0; i < 5; i++) await call('/api/auth/verify', { method: 'POST', body: { email: 'dan@example.com', code: code2 === '123456' ? '654321' : '123456' } });
 assert.equal((await call('/api/auth/verify', { method: 'POST', body: { email: 'dan@example.com', code: code2 } })).status, 400, '5 wrong tries burn the code');
 
+// Parallel wrong guesses can't exceed 5 per code; the per-address cap then blocks the right code too.
+const { code: code3 } = await createLoginToken('eve@example.com');
+const bad = code3 === '999999' ? '888888' : '999999';
+await Promise.all(Array.from({ length: 12 }, () => call('/api/auth/verify', { method: 'POST', body: { email: 'eve@example.com', code: bad } })));
+const attempts = (await q("SELECT attempts FROM login_tokens WHERE email = 'eve@example.com'"))[0].attempts;
+assert.ok(attempts <= 5, `attempts capped at 5 under parallel guesses (got ${attempts})`);
+assert.equal((await call('/api/auth/verify', { method: 'POST', body: { email: 'eve@example.com', code: code3 } })).status, 400, 'code burned after 5 wrong tries');
+
 console.log('all account tests passed');
 server.close();
 process.exit(0);

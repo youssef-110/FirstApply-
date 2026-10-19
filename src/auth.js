@@ -125,14 +125,17 @@ export const consumeLoginCode = async (rawEmail, rawCode) => {
   const email = normalizeEmail(rawEmail);
   const code = String(rawCode ?? '').replace(/\s+/g, '');
   if (!email || !/^\d{6}$/.test(code)) return null;
-  const row = await one(`SELECT token_hash, code_hash FROM login_tokens
-    WHERE email = $1 AND used_at IS NULL AND expires_at > now() AND code_hash IS NOT NULL AND attempts < $2
-    ORDER BY created_at DESC LIMIT 1`, [email, MAX_CODE_ATTEMPTS]);
-  if (!row) return null;
-  if (!safeEqual(row.code_hash, codeHash(email, code))) {
-    await q('UPDATE login_tokens SET attempts = attempts + 1 WHERE token_hash = $1', [row.token_hash]);
-    return null;
-  }
+  // Cap guesses per address across all its codes (requesting new codes doesn't reset it).
+  if (!(await rateLimit(`verify-code:${email}`, 10, 60))) return null;
+  // Count the attempt atomically before comparing: the row lock makes parallel guesses
+  // queue up, and `attempts < max` is re-checked after the lock, so no burst gets extra tries.
+  const row = await one(`UPDATE login_tokens SET attempts = attempts + 1
+    WHERE token_hash = (SELECT token_hash FROM login_tokens
+                        WHERE email = $1 AND used_at IS NULL AND expires_at > now() AND code_hash IS NOT NULL
+                        ORDER BY created_at DESC LIMIT 1)
+      AND attempts < $2
+    RETURNING token_hash, code_hash`, [email, MAX_CODE_ATTEMPTS]);
+  if (!row || !safeEqual(row.code_hash, codeHash(email, code))) return null;
   const used = await one('UPDATE login_tokens SET used_at = now() WHERE token_hash = $1 AND used_at IS NULL RETURNING email', [row.token_hash]);
   return used?.email ?? null;
 };
