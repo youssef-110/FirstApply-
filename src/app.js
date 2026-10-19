@@ -1,4 +1,5 @@
 import express from 'express';
+import { waitUntil } from '@vercel/functions';
 import { migrate, one, q } from './db.js';
 import { seed } from './seed.js';
 import { buildWhere, describeFilters, parseFilters } from './filters.js';
@@ -45,38 +46,32 @@ app.post('/api/auth/request', ah(async (req, res) => {
   if (!email) return res.status(400).json({ error: 'Enter a valid email address, like name@example.com.' });
   if (req.body?.acceptTerms !== true) return res.status(400).json({ error: 'Please accept the terms and privacy policy to continue.' });
   if (!mailProvider()) return res.status(503).json({ error: 'Sign-in emails are not set up on this server yet.' });
-  // Limits protect both inboxes from being flooded and the site's daily email quota.
-  if (!(await rateLimit(`signin-ip:${clientIp(req)}`, 10, 60))) return tooMany(res, 60);
-  if (!(await rateLimit(`signin-email:${email}`, 3, 15))) return tooMany(res, 15);
-  if (!(await rateLimit(`signin-email-day:${email}`, 10, 60 * 24))) {
-    return res.status(429).json({ error: "Too many sign-in emails for this address today. Try again tomorrow." });
-  }
-  // Hard ceiling below the email provider's daily quota. It treats every address the same,
-  // so its answer reveals nothing about who has an account.
-  const gmail = mailProvider() === 'gmail';
-  if (!(await rateLimit('signin-all', gmail ? 300 : 80, 60 * 24))) {
-    return res.status(503).json({ error: 'Sign-in emails are paused for today because of high demand. Please try again tomorrow.' });
-  }
-  // Smaller cap for addresses without an account, so a flood of fake sign-ups pauses new
-  // sign-ups first and leaves room for existing users. When it's hit, unknown addresses get the
-  // same "sent" answer as everyone else (but no email), so the response can't be used to
-  // find out whether an address has an account.
-  const known = await one('SELECT 1 FROM users WHERE email = $1', [email]);
-  const dailyNew = Number(process.env.SIGNUP_DAILY_LIMIT || (gmail ? 150 : 40));
-  if (!known && !(await rateLimit('signin-new', dailyNew, 60 * 24))) {
-    console.warn('[auth] daily new sign-up cap reached; not sending');
-    return res.json({ sent: true });
-  }
+  // Visible limits are keyed on the requester (IP, or IP + address), so an attacker can only
+  // ever block their own requests, never lock the real owner out of their account.
+  const ip = clientIp(req);
+  if (!(await rateLimit(`signin-ip:${ip}`, 10, 60))) return tooMany(res, 60);
+  if (!(await rateLimit(`signin-ip-email:${ip}:${email}`, 3, 15))) return tooMany(res, 15);
 
-  const token = await createLoginToken(email);
-  try {
+  // Silent limits: past these, no email is sent but the answer is identical, so they reveal
+  // nothing about whether an address has an account.
+  //  - per address: stops anyone flooding one inbox from many IPs
+  //  - per pool: keeps the total under the email provider's daily quota. New and existing
+  //    addresses have separate pools, so fake sign-ups can't use up existing users' budget.
+  const gmail = mailProvider() === 'gmail';
+  const known = await one('SELECT 1 FROM users WHERE email = $1', [email]);
+  const pool = known ? ['signin-known', gmail ? 200 : 40] : ['signin-new', Number(process.env.SIGNUP_DAILY_LIMIT || (gmail ? 150 : 30))];
+  const allowed = (await rateLimit(`signin-email-day:${email}`, 20, 60 * 24)) && (await rateLimit(pool[0], pool[1], 60 * 24));
+
+  // Answer first, send afterwards: every path takes the same time, so response timing can't
+  // reveal which limit applied or whether the address has an account.
+  res.json({ sent: true });
+  if (!allowed) return console.warn(`[auth] sign-in email skipped (${pool[0]} or per-address limit)`);
+  const send = (async () => {
+    const token = await createLoginToken(email);
     // The token sits in the URL fragment, so it never reaches server or proxy logs.
     await sendSignInEmail(email, `${appUrl()}/signin.html#t=${token}`);
-  } catch (err) {
-    console.error('[auth] sign-in email failed:', err.message);
-    return res.status(502).json({ error: "We couldn't send an email to that address. Check it and try again." });
-  }
-  res.json({ sent: true });
+  })().catch((err) => console.error('[auth] sign-in email failed:', err.message));
+  waitUntil(send); // keeps the serverless function alive until the email is sent
 }));
 
 app.post('/api/auth/verify', ah(async (req, res) => {
